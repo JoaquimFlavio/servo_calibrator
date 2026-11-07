@@ -43,6 +43,54 @@ CalibrationResult results[2];
 // Buffer reutilizado para não ocupar a pilha do UNO.
 unsigned long samples[2][SAMPLE_COUNT];
 
+// Colunas de largura fixa: legíveis mesmo em monitores sem tab stops.
+void logSection(const __FlashStringHelper *title) {
+  Serial.println(F("\n======================================================================"));
+  Serial.println(title);
+  Serial.println(F("======================================================================"));
+}
+
+void logText(const __FlashStringHelper *value) {
+  Serial.print(F("| "));
+  size_t length = Serial.print(value);
+  while (length++ < 12) Serial.print(' ');
+  Serial.print(' ');
+}
+
+void logNumber(unsigned long value) {
+  char buffer[11];
+  ultoa(value, buffer, 10);
+  Serial.print(F("| "));
+  for (size_t i = strlen(buffer); i < 12; i++) Serial.print(' ');
+  Serial.print(buffer);
+  Serial.print(' ');
+}
+
+void logFloat(float value, uint8_t decimals) {
+  char buffer[24];
+  dtostrf(value, 12, decimals, buffer);
+  Serial.print(F("| ")); Serial.print(buffer); Serial.print(' ');
+}
+
+void logMeasurementHeader() {
+  logText(F("L cmd [us]")); logText(F("R cmd [us]"));
+  logText(F("L pulsos")); logText(F("R pulsos")); Serial.println('|');
+  Serial.println(F("+--------------+--------------+--------------+--------------+"));
+}
+
+void logMeasurementCells(int leftPulse, int rightPulse,
+                         unsigned long left, unsigned long right) {
+  if (leftPulse >= 0) logNumber(leftPulse); else logText(F("sem sinal"));
+  if (rightPulse >= 0) logNumber(rightPulse); else logText(F("sem sinal"));
+  logNumber(left); logNumber(right);
+}
+
+void logMeasurement(int leftPulse, int rightPulse,
+                    unsigned long left, unsigned long right) {
+  logMeasurementCells(leftPulse, rightPulse, left, right);
+  Serial.println('|');
+}
+
 void leftEncoderISR() { encoderCounts[0]++; }
 void rightEncoderISR() { encoderCounts[1]++; }
 
@@ -67,9 +115,10 @@ void halt(const __FlashStringHelper *reason) {
   // Remove o sinal mesmo se a parada ainda não foi descoberta.
   servos[0].detach();
   servos[1].detach();
-  Serial.print(F("FALHA: "));
+  logSection(F("[FALHA] EXECUCAO INTERROMPIDA"));
+  Serial.print(F("Motivo:\t"));
   Serial.println(reason);
-  Serial.println(F("Execucao interrompida. Corrija a montagem e reinicie."));
+  Serial.println(F("Revise os dados acima e reinicie a placa."));
   while (true) delay(1000);
 }
 
@@ -80,15 +129,10 @@ void measure(unsigned long &left, unsigned long &right) {
   readEncoders(left, right);
 }
 
-void printMeasurement(int motor, int pulse, unsigned long left, unsigned long right) {
-  Serial.print(F("motor=")); Serial.print(motor == 0 ? F("L") : F("R"));
-  Serial.print(F(" pulso_us=")); Serial.print(pulse);
-  Serial.print(F(" pulsos_L=")); Serial.print(left);
-  Serial.print(F(" pulsos_R=")); Serial.println(right);
-}
-
 // Varredura simultânea, com detecção independente da faixa de parada.
 void discoverStops() {
+  Serial.println(F("\n> Busca dos pontos de parada"));
+  logMeasurementHeader();
   int runStart[2] = {-1, -1};
   int bestStart[2] = {-1, -1};
   int bestEnd[2] = {-1, -1};
@@ -98,8 +142,8 @@ void discoverStops() {
     for (int m = 0; m < 2; m++) servos[m].writeMicroseconds(pulse);
     unsigned long counts[2];
     measure(counts[0], counts[1]);
+    logMeasurement(pulse, pulse, counts[0], counts[1]);
     for (int m = 0; m < 2; m++) {
-      printMeasurement(m, pulse, counts[0], counts[1]);
       if (counts[m] == 0) {
         if (runStart[m] < 0) runStart[m] = i;
         int length = i - runStart[m] + 1;
@@ -131,7 +175,10 @@ void attachMotor(int motor, int pulse) {
 }
 
 void setupHardware() {
-  Serial.println(F("ETAPA 1: CORRESPONDENCIA MOTORES / ENCODERS"));
+  logSection(F("ETAPA 1 / HARDWARE - CORRESPONDENCIA DOS ENCODERS"));
+  Serial.print(F("Janela de medicao:\t")); Serial.print(MEASURE_MS); Serial.println(F(" ms"));
+  Serial.println(F("L = esquerdo; R = direito. Apenas um motor recebe sinal por teste."));
+  logMeasurementHeader();
   pinMode(LEFT_ENCODER_PIN, INPUT_PULLUP);
   pinMode(RIGHT_ENCODER_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(LEFT_ENCODER_PIN), leftEncoderISR, RISING);
@@ -142,12 +189,14 @@ void setupHardware() {
     attachMotor(m, PULSE_MAX_US);
     unsigned long left, right;
     measure(left, right);
-    printMeasurement(m, PULSE_MAX_US, left, right);
+    logMeasurement(m == 0 ? PULSE_MAX_US : -1, m == 1 ? PULSE_MAX_US : -1, left, right);
     servos[m].detach();
     unsigned long wanted = m == 0 ? left : right;
     unsigned long other = m == 0 ? right : left;
     if (!wanted || other) halt(F("motor/encoder sem correspondencia ou motor inativo girando."));
-    Serial.println(F("Correspondencia motor/encoder confirmada."));
+    Serial.print(F("[OK]\t"));
+    Serial.print(m == 0 ? F("Esquerdo") : F("Direito"));
+    Serial.println(F(" -> encoder correspondente confirmado."));
     delay(SETTLE_MS);
   }
 }
@@ -184,13 +233,13 @@ void discoverDirections(int direction) {
     }
     unsigned long counts[2];
     measure(counts[0], counts[1]);
+    logMeasurement(pulses[0], pulses[1], counts[0], counts[1]);
     for (int m = 0; m < 2; m++) {
       int i = sampleCount[m] - 1 - step;
       if (i < 0) {
         if (counts[m]) halt(F("motor concluido recebeu pulsos no comando de parada."));
         continue;
       }
-      printMeasurement(m, pulses[m], counts[0], counts[1]);
       samples[m][i] = counts[m];
       DirectionParameters &p = motors[m].direction[direction];
       if (counts[m] > p.maximumPulses) {
@@ -218,24 +267,25 @@ void discoverDirections(int direction) {
       }
     }
     if (!minimumFound) {
-      Serial.println(F("AVISO: sem amostras vizinhas com movimento; limite inferior igual ao maximo medido."));
+      Serial.println(F("[AVISO] Sem amostras vizinhas com movimento; minimo igual ao maximo medido."));
     }
-    Serial.print(F("Motor=")); Serial.print(m == 0 ? F("L") : F("R"));
-    Serial.print(F(" limite inferior da calibracao (us): "));
-    Serial.println(p.minimumUs);
+    Serial.print(F("[OK]\tMinimo ")); Serial.print(m == 0 ? F("L") : F("R"));
+    Serial.print(F(":\t"));
+    Serial.print(p.minimumUs); Serial.println(F(" us"));
   }
 }
 
 void discoverParameters() {
-  Serial.println(F("ETAPA 2: PARAMETROS DOS MOTORES / MEDICAO SIMULTANEA"));
+  logSection(F("ETAPA 2 / PARAMETROS - MEDICAO SIMULTANEA"));
   for (int m = 0; m < 2; m++) attachMotor(m, PULSE_MIN_US);
   discoverStops();
   unsigned long left, right;
   measure(left, right);
   if (left || right) halt(F("ha rotacao com ambos os comandos de parada."));
   for (int d = 0; d < 2; d++) {
-    Serial.print(F("Ambos os motores: sentido_pulso="));
-    Serial.println(d == 0 ? F("negativo") : F("positivo"));
+    Serial.print(F("\n> Varredura: pulsos "));
+    Serial.println(d == 0 ? F("abaixo da parada (-)") : F("acima da parada (+)"));
+    logMeasurementHeader();
     discoverDirections(d);
   }
 }
@@ -254,6 +304,11 @@ void measurePair(const int pulses[2], unsigned long &left, unsigned long &right)
 }
 
 void calibrateDirection(int direction) {
+  Serial.print(F("\n> Sentido logico: "));
+  Serial.println(direction == 1 ? F("POSITIVO (L+, R-)") : F("NEGATIVO (L-, R+)"));
+  logText(F("L cmd [us]")); logText(F("R cmd [us]"));
+  logText(F("L pulsos")); logText(F("R pulsos")); logText(F("Erro [%]")); Serial.println('|');
+  Serial.println(F("+--------------+--------------+--------------+--------------+--------------+"));
   // Montagem espelhada: pulsos opostos produzem o mesmo sentido lógico.
   int dirs[2] = {direction, 1 - direction};
   CalibrationResult &result = results[direction];
@@ -264,10 +319,12 @@ void calibrateDirection(int direction) {
   }
   unsigned long left, right;
   measurePair(pulses, left, right);
+  logMeasurementCells(pulses[0], pulses[1], left, right);
+  logFloat(relativeError(left, right) * 100.0, 2); Serial.println('|');
   if (!left || !right) halt(F("sem pulsos na medicao inicial da calibracao."));
   result.error = relativeError(left, right);
   result.valid = result.error < TOLERANCE;
-  if (result.valid) return;
+  if (result.valid) { Serial.println(F("[OK]\tMedicao inicial dentro da tolerancia (< 5%).")); return; }
 
   int adjusted = left > right ? 0 : 1;
   DirectionParameters &p = motors[adjusted].direction[dirs[adjusted]];
@@ -281,99 +338,84 @@ void calibrateDirection(int direction) {
     unsigned long actual = adjusted == 0 ? left : right;
     if (!target) halt(F("referencia sem pulsos durante calibracao."));
     float error = relativeError(left, right);
-    Serial.print(F("CAL sentido=")); Serial.print(direction);
-    Serial.print(F(" pulso_L=")); Serial.print(pulses[0]);
-    Serial.print(F(" pulso_R=")); Serial.print(pulses[1]);
-    Serial.print(F(" pulsos_L=")); Serial.print(left);
-    Serial.print(F(" pulsos_R=")); Serial.print(right);
-    Serial.print(F(" erro_pct=")); Serial.println(error * 100.0, 2);
+    logMeasurementCells(pulses[0], pulses[1], left, right);
+    logFloat(error * 100.0, 2); Serial.println('|');
     if (error < result.error) {
       result.error = error;
       result.pulseUs[0] = pulses[0];
       result.pulseUs[1] = pulses[1];
     }
-    if (error < TOLERANCE) { result.valid = true; return; }
+    if (error < TOLERANCE) {
+      result.valid = true;
+      Serial.println(F("[OK]\tCalibracao concluida (< 5%)."));
+      return;
+    }
     if (actual > target) high = mid - 1;
     else low = mid + 1;
   }
-  Serial.println(F("AVISO: tolerancia nao atingida; melhor medicao mantida."));
+  Serial.println(F("[AVISO] Tolerancia nao atingida; melhor medicao mantida."));
 }
 
-// Trecho copiável, como no log original do repositório.
+float calibratedGain(int motor, int direction) {
+  int motorDirection = motor == 0 ? direction : 1 - direction;
+  return (float)abs(results[direction].pulseUs[motor] - motors[motor].stopUs) /
+    abs(motors[motor].direction[motorDirection].maximumUs - motors[motor].stopUs);
+}
+
+// Somente os pontos de parada e os ganhos, prontos para copiar.
 void printCodeResults() {
-  Serial.println(F("\n// ===== CODIGO DOS PARAMETROS E DA CALIBRACAO ====="));
-  Serial.println(F("// POSITIVE: L aumenta pulso, R diminui; NEGATIVE: inverso."));
-  Serial.println(F("// Ganhos multiplicam o desvio entre MAX e STOP de cada sentido."));
-  Serial.println(F("// MIN, MAX e CALIBRATED sao pulsos absolutos em microssegundos."));
+  Serial.println(F("\n--- CODIGO PARA COPIAR ------------------------------------------------"));
   for (int m = 0; m < 2; m++) {
-    Serial.print(F("const int "));
-    Serial.print(m == 0 ? F("LEFT") : F("RIGHT"));
-    Serial.print(F("_STOP = ")); Serial.print(motors[m].stopUs);
-    Serial.println(';');
+    Serial.print(m == 0 ? F("const int LEFT_STOP  = ") : F("const int RIGHT_STOP = "));
+    Serial.print(motors[m].stopUs); Serial.println(';');
   }
+  Serial.println();
   for (int d = 1; d >= 0; d--) {
-    Serial.print(F("const bool CALIBRATION_VALID_"));
-    Serial.print(d == 1 ? F("POSITIVE") : F("NEGATIVE"));
-    Serial.print(F(" = "));
-    Serial.print(results[d].valid ? F("true") : F("false"));
-    Serial.println(';');
-    if (!results[d].valid) Serial.println(F("// ATENCAO: melhor ajuste abaixo nao atingiu a tolerancia."));
     for (int m = 0; m < 2; m++) {
-      DirectionParameters &p = motors[m].direction[m == 0 ? d : 1 - d];
-      for (int field = 0; field < 4; field++) {
-        Serial.print(field == 3 ? F("const float ") : F("const int "));
-        Serial.print(m == 0 ? F("LEFT_") : F("RIGHT_"));
-        switch (field) {
-          case 0: Serial.print(F("MIN_")); break;
-          case 1: Serial.print(F("MAX_")); break;
-          case 2: Serial.print(F("CALIBRATED_")); break;
-          case 3: Serial.print(F("GAIN_")); break;
-        }
-        Serial.print(d == 1 ? F("POSITIVE") : F("NEGATIVE"));
-        Serial.print(F(" = "));
-        if (field == 0) Serial.print(p.minimumUs);
-        else if (field == 1) Serial.print(p.maximumUs);
-        else if (field == 2) Serial.print(results[d].pulseUs[m]);
-        else Serial.print((float)abs(results[d].pulseUs[m] - motors[m].stopUs) /
-                              abs(p.maximumUs - motors[m].stopUs), 4);
-        Serial.println(';');
-      }
+      Serial.print(m == 0 ? F("const float LEFT_GAIN_") : F("const float RIGHT_GAIN_"));
+      Serial.print(d == 1 ? F("POSITIVE") : F("NEGATIVE"));
+      Serial.print(m == 0 ? F("  = ") : F(" = "));
+      Serial.print(calibratedGain(m, d), 4); Serial.println(';');
     }
   }
-  Serial.println(F("// ===== FIM DO CODIGO =====\n"));
+  Serial.println(F("----------------------------------------------------------------------"));
 }
 
 void printResults() {
-  Serial.println(F("ETAPA 4: RESULTADOS"));
-  Serial.print(F("Unidades: comandos em us; velocidade em pulsos por janela de "));
-  Serial.print(MEASURE_MS); Serial.println(F(" ms."));
-  Serial.println(F("MOTOR,SENTIDO_PULSO,PARADA_US,MIN_US,MAX_US,PULSOS_MAX"));
+  logSection(F("ETAPA 4 / RESULTADOS"));
+  Serial.print(F("Janela:\t")); Serial.print(MEASURE_MS); Serial.println(F(" ms"));
+  Serial.println(F("Sentido +/- dos parametros = pulso acima/abaixo da parada."));
+  Serial.println(F("\n> Parametros dos motores"));
+  logText(F("Motor")); logText(F("Pulso +/-")); logText(F("Parada [us]"));
+  logText(F("Min [us]")); logText(F("Max [us]")); logText(F("Pulsos max")); Serial.println('|');
+  Serial.println(F("+--------------+--------------+--------------+--------------+--------------+--------------+"));
   for (int m = 0; m < 2; m++) {
     for (int d = 0; d < 2; d++) {
       DirectionParameters &p = motors[m].direction[d];
-      Serial.print(m == 0 ? F("L,") : F("R,"));
-      Serial.print(d == 0 ? F("-,") : F("+,"));
-      Serial.print(motors[m].stopUs); Serial.print(',');
-      Serial.print(p.minimumUs); Serial.print(',');
-      Serial.print(p.maximumUs); Serial.print(',');
-      Serial.println(p.maximumPulses);
+      logText(m == 0 ? F("Esquerdo") : F("Direito"));
+      logText(d == 0 ? F("-") : F("+"));
+      logNumber(motors[m].stopUs); logNumber(p.minimumUs);
+      logNumber(p.maximumUs); logNumber(p.maximumPulses); Serial.println('|');
     }
   }
-  Serial.println(F("CAL_SENTIDO,VALIDO,PULSO_L_US,PULSO_R_US,GANHO_L,GANHO_R,ERRO_PCT"));
-  for (int d = 0; d < 2; d++) {
+  Serial.println(F("\n> Calibracao (sentido logico; motores espelhados)"));
+  logText(F("Sentido")); logText(F("Status")); logText(F("L cmd [us]"));
+  logText(F("R cmd [us]")); logText(F("Ganho L")); logText(F("Ganho R")); logText(F("Erro [%]")); Serial.println('|');
+  Serial.println(F("+--------------+--------------+--------------+--------------+--------------+--------------+--------------+"));
+  for (int d = 1; d >= 0; d--) {
     CalibrationResult &r = results[d];
-    Serial.print(d); Serial.print(','); Serial.print(r.valid); Serial.print(',');
-    for (int m = 0; m < 2; m++) { Serial.print(r.pulseUs[m]); Serial.print(','); }
-    for (int m = 0; m < 2; m++) {
-      int motorDirection = m == 0 ? d : 1 - d;
-      float gain = (float)abs(r.pulseUs[m] - motors[m].stopUs) /
-        abs(motors[m].direction[motorDirection].maximumUs - motors[m].stopUs);
-      Serial.print(gain, 4); Serial.print(',');
-    }
-    Serial.println(r.error * 100.0, 2);
+    logText(d == 1 ? F("POSITIVO") : F("NEGATIVO"));
+    logText(r.valid ? F("OK") : F("NAO CONVERGIU"));
+    logNumber(r.pulseUs[0]); logNumber(r.pulseUs[1]);
+    logFloat(calibratedGain(0, d), 4); logFloat(calibratedGain(1, d), 4);
+    logFloat(r.error * 100.0, 2); Serial.println('|');
   }
+  for (int d = 0; d < 2; d++) {
+    if (!results[d].valid) Serial.println(F("[AVISO] Ha ganhos sem convergencia; consulte o status antes de utilizar."));
+  }
+  Serial.println(F("Ganhos: multiplicadores do desvio entre MAX e PARADA de cada sentido."));
   printCodeResults();
-  Serial.println(F("Plot de validacao a seguir. Envie p para repetir o plot."));
+  Serial.println(F("[PLOT] Validacao a seguir: L/R = pulsos por janela. Envie 'p' para repetir."));
 }
 
 // Plot de validação: duas séries com pulsos medidos após a calibração.
@@ -407,18 +449,17 @@ void debugMotorPulses(int leftPulseUs, int rightPulseUs) {
   attachMotor(0, leftPulseUs);
   attachMotor(1, rightPulseUs);
 
-  Serial.println(F("DEBUG: comandos fixos; reinicie a placa para encerrar."));
-  Serial.print(F("pulso_L_us=")); Serial.print(leftPulseUs);
-  Serial.print(F(" pulso_R_us=")); Serial.print(rightPulseUs);
-  Serial.print(F(" janela_ms=")); Serial.println(MEASURE_MS);
+  logSection(F("DEBUG / COMANDOS FIXOS"));
+  Serial.println(F("Reinicie a placa para encerrar. Contagens por janela, sem calibracao."));
+  Serial.print(F("Janela:\t")); Serial.print(MEASURE_MS); Serial.println(F(" ms"));
+  logMeasurementHeader();
   delay(SETTLE_MS);
   while (true) {
     resetEncoders();
     delay(MEASURE_MS);
     unsigned long left, right;
     readEncoders(left, right);
-    Serial.print(F("pulsos_L=")); Serial.print(left);
-    Serial.print(F(" pulsos_R=")); Serial.println(right);
+    logMeasurement(leftPulseUs, rightPulseUs, left, right);
   }
 }
 
@@ -431,7 +472,7 @@ void setup() {
 
   setupHardware();
   discoverParameters();
-  Serial.println(F("ETAPA 3: CALIBRACAO POR BUSCA BINARIA"));
+  logSection(F("ETAPA 3 / CALIBRACAO POR BUSCA BINARIA"));
   calibrateDirection(0);
   calibrateDirection(1);
   stopMotors();
