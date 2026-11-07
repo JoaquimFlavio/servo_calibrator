@@ -1,615 +1,444 @@
 #include <Servo.h>
 #include <math.h>
 
-// ======================================================
-// SERVOS
-// ======================================================
-
+// Única configuração específica da montagem (UNO: encoders em D2/D3).
 const uint8_t LEFT_SERVO_PIN = 6;
 const uint8_t RIGHT_SERVO_PIN = 5;
-
-Servo leftServo;
-Servo rightServo;
-
-// Valores já calibrados anteriormente
-const int LEFT_STOP = 1450;
-const int RIGHT_STOP = 1450;
-
-// Sentidos físicos dos servos
-const int LEFT_DIRECTION = 1;
-const int RIGHT_DIRECTION = -1;
-
-const int MAX_SERVO_SPEED = 300;
-
-
-// ======================================================
-// ENCODERS
-// ======================================================
-//
-// Arduino UNO:
-// D2 = INT0
-// D3 = INT1
-//
-
 const uint8_t LEFT_ENCODER_PIN = 2;
 const uint8_t RIGHT_ENCODER_PIN = 3;
 
-volatile unsigned long leftEncoderCount = 0;
-volatile unsigned long rightEncoderCount = 0;
-
-
-// ======================================================
-// PULSOS POR VOLTA
-// ======================================================
-//
-// Ajuste conforme seus encoders.
-//
-// Se os dois forem iguais, use o mesmo valor.
-//
-// IMPORTANTE:
-// Considere apenas os pulsos contados na borda RISING,
-// pois é assim que este código trabalha.
-//
-
-const float LEFT_ENCODER_PPR = 20.0;
-const float RIGHT_ENCODER_PPR = 20.0;
-
-
-// ======================================================
-// GANHOS
-// ======================================================
-
-float leftGainPositive = 1.0;
-float rightGainPositive = 1.0;
-
-float leftGainNegative = 1.0;
-float rightGainNegative = 1.0;
-
-
-// ======================================================
-// CONFIGURAÇÃO DA CALIBRAÇÃO
-// ======================================================
-
-// Velocidade lógica utilizada no teste (max 300)
-const int CALIBRATION_SPEED = 300;
-
-// Tempo para o motor atingir velocidade estável
-const unsigned long SETTLE_TIME_MS = 500;
-
-// Tempo efetivo de medição
-const unsigned long MEASURE_TIME_MS = 3000;
-
-// Pausa entre medições
-const unsigned long PAUSE_TIME_MS = 1000/4;
-
-// Quantidade máxima de tentativas ajustando um único motor
-const int MAX_ITERATIONS_PER_MOTOR = 50;
-
-// A calibração só é aceita com erro estritamente abaixo de 5%
+// Limites de exploração: não é possível descobrir limites mecânicos por encoder.
+const int PULSE_MIN_US = 1000;
+const int PULSE_MAX_US = 2000;
+const int SCAN_STEP_US = 25;
+const unsigned long SETTLE_MS = 500;
+const unsigned long MEASURE_MS = 1000;
 const float TOLERANCE = 0.05;
+const int SAMPLE_COUNT = (PULSE_MAX_US - PULSE_MIN_US) / SCAN_STEP_US + 1;
 
-// Se após 10 tentativas o erro continuar acima de 50%,
-// troca o motor de referência e passa a ajustar o outro.
-const float SWITCH_MOTOR_ERROR = 0.50;
+Servo servos[2];
+volatile unsigned long encoderCounts[2] = {0, 0};
 
-// Quanto corrigir a cada tentativa.
-//
-// 1.0 = correção total
-// 0.5 = correção mais suave
-//
-// Recomendo 0.5~0.7 para evitar oscilações.
+struct DirectionParameters {
+  int minimumUs;
+  int maximumUs;
+  unsigned long maximumPulses;
+};
 
-const float ADJUST_STRENGTH = 0.15;
+struct MotorParameters {
+  int stopUs;
+  int stopLowUs;
+  int stopHighUs;
+  DirectionParameters direction[2]; // 0: pulso menor; 1: pulso maior que parada
+};
 
-// Limites de segurança para os ganhos
-const float MIN_GAIN = 0.50;
-const float MAX_GAIN = 1.50;
+struct CalibrationResult {
+  bool valid;
+  int pulseUs[2];
+  float error;
+};
 
+MotorParameters motors[2];
+CalibrationResult results[2];
+// Buffer reutilizado para não ocupar a pilha do UNO.
+unsigned long samples[2][SAMPLE_COUNT];
 
-// ======================================================
-// INTERRUPÇÕES DOS ENCODERS
-// ======================================================
-
-void leftEncoderISR() {
-  leftEncoderCount++;
-}
-
-void rightEncoderISR() {
-  rightEncoderCount++;
-}
-
-
-// ======================================================
-// ZERA ENCODERS
-// ======================================================
+void leftEncoderISR() { encoderCounts[0]++; }
+void rightEncoderISR() { encoderCounts[1]++; }
 
 void resetEncoders() {
   noInterrupts();
-
-  leftEncoderCount = 0;
-  rightEncoderCount = 0;
-
+  encoderCounts[0] = encoderCounts[1] = 0;
   interrupts();
 }
 
-
-// ======================================================
-// OBTÉM CONTAGEM
-// ======================================================
-
-void getEncoderCounts(
-  unsigned long &left,
-  unsigned long &right) {
+void readEncoders(unsigned long &left, unsigned long &right) {
   noInterrupts();
-
-  left = leftEncoderCount;
-  right = rightEncoderCount;
-
+  left = encoderCounts[0];
+  right = encoderCounts[1];
   interrupts();
 }
-
-
-// ======================================================
-// PARA OS MOTORES
-// ======================================================
 
 void stopMotors() {
-  leftServo.writeMicroseconds(LEFT_STOP);
-  rightServo.writeMicroseconds(RIGHT_STOP);
+  for (int m = 0; m < 2; m++) servos[m].writeMicroseconds(motors[m].stopUs);
 }
 
-
-// ======================================================
-// CONTROLE DOS MOTORES
-// ======================================================
-
-void setMotorSpeed(
-  int leftSpeed,
-  int rightSpeed,
-  float leftGain,
-  float rightGain) {
-  int adjustedLeft =
-    leftSpeed * leftGain;
-
-  int adjustedRight =
-    rightSpeed * rightGain;
-
-  adjustedLeft = constrain(
-    adjustedLeft,
-    -MAX_SERVO_SPEED,
-    MAX_SERVO_SPEED);
-
-  adjustedRight = constrain(
-    adjustedRight,
-    -MAX_SERVO_SPEED,
-    MAX_SERVO_SPEED);
-
-  int leftPulse =
-    LEFT_STOP + LEFT_DIRECTION * adjustedLeft;
-
-  int rightPulse =
-    RIGHT_STOP + RIGHT_DIRECTION * adjustedRight;
-
-  leftServo.writeMicroseconds(leftPulse);
-  rightServo.writeMicroseconds(rightPulse);
+void halt(const __FlashStringHelper *reason) {
+  // Remove o sinal mesmo se a parada ainda não foi descoberta.
+  servos[0].detach();
+  servos[1].detach();
+  Serial.print(F("FALHA: "));
+  Serial.println(reason);
+  Serial.println(F("Execucao interrompida. Corrija a montagem e reinicie."));
+  while (true) delay(1000);
 }
 
-
-// ======================================================
-// EXECUTA UMA MEDIÇÃO
-// ======================================================
-
-bool measureMotors(
-  int speed,
-  float leftGain,
-  float rightGain,
-  float &leftTurns,
-  float &rightTurns) {
-  // Começa a movimentação
-  setMotorSpeed(
-    speed,
-    speed,
-    leftGain,
-    rightGain);
-
-  // Aguarda estabilizar
-  delay(SETTLE_TIME_MS);
-
-  // Só começamos a contar depois da estabilização
+void measure(unsigned long &left, unsigned long &right) {
+  delay(SETTLE_MS);
   resetEncoders();
+  delay(MEASURE_MS);
+  readEncoders(left, right);
+}
 
-  delay(MEASURE_TIME_MS);
+void printMeasurement(int motor, int pulse, unsigned long left, unsigned long right) {
+  Serial.print(F("motor=")); Serial.print(motor == 0 ? F("L") : F("R"));
+  Serial.print(F(" pulso_us=")); Serial.print(pulse);
+  Serial.print(F(" pulsos_L=")); Serial.print(left);
+  Serial.print(F(" pulsos_R=")); Serial.println(right);
+}
 
-  unsigned long leftCount;
-  unsigned long rightCount;
+// Varredura simultânea, com detecção independente da faixa de parada.
+void discoverStops() {
+  int runStart[2] = {-1, -1};
+  int bestStart[2] = {-1, -1};
+  int bestEnd[2] = {-1, -1};
+  int bestLength[2] = {0, 0};
+  for (int i = 0; i < SAMPLE_COUNT; i++) {
+    int pulse = PULSE_MIN_US + i * SCAN_STEP_US;
+    for (int m = 0; m < 2; m++) servos[m].writeMicroseconds(pulse);
+    unsigned long counts[2];
+    measure(counts[0], counts[1]);
+    for (int m = 0; m < 2; m++) {
+      printMeasurement(m, pulse, counts[0], counts[1]);
+      if (counts[m] == 0) {
+        if (runStart[m] < 0) runStart[m] = i;
+        int length = i - runStart[m] + 1;
+        if (length > bestLength[m]) {
+          bestLength[m] = length;
+          bestStart[m] = runStart[m];
+          bestEnd[m] = i;
+        }
+      } else {
+        runStart[m] = -1;
+      }
+    }
+  }
+  for (int m = 0; m < 2; m++) {
+    if (bestStart[m] <= 0 || bestEnd[m] >= SAMPLE_COUNT - 1) {
+      halt(F("parada nao identificada: confira encoder, alimentacao e faixa de pulsos."));
+    }
+    motors[m].stopLowUs = PULSE_MIN_US + bestStart[m] * SCAN_STEP_US;
+    motors[m].stopHighUs = PULSE_MIN_US + bestEnd[m] * SCAN_STEP_US;
+    motors[m].stopUs = (motors[m].stopLowUs + motors[m].stopHighUs) / 2;
+  }
+  stopMotors();
+}
 
-  getEncoderCounts(
-    leftCount,
-    rightCount);
+void attachMotor(int motor, int pulse) {
+  // Precarrega o comando antes de habilitar os pulsos.
+  servos[motor].writeMicroseconds(pulse);
+  servos[motor].attach(motor == 0 ? LEFT_SERVO_PIN : RIGHT_SERVO_PIN);
+}
 
+void setupHardware() {
+  Serial.println(F("ETAPA 1: CORRESPONDENCIA MOTORES / ENCODERS"));
+  pinMode(LEFT_ENCODER_PIN, INPUT_PULLUP);
+  pinMode(RIGHT_ENCODER_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(LEFT_ENCODER_PIN), leftEncoderISR, RISING);
+  attachInterrupt(digitalPinToInterrupt(RIGHT_ENCODER_PIN), rightEncoderISR, RISING);
+
+  // Somente o motor sob teste recebe sinal. Nenhuma parada é buscada aqui.
+  for (int m = 0; m < 2; m++) {
+    attachMotor(m, PULSE_MAX_US);
+    unsigned long left, right;
+    measure(left, right);
+    printMeasurement(m, PULSE_MAX_US, left, right);
+    servos[m].detach();
+    unsigned long wanted = m == 0 ? left : right;
+    unsigned long other = m == 0 ? right : left;
+    if (!wanted || other) halt(F("motor/encoder sem correspondencia ou motor inativo girando."));
+    Serial.println(F("Correspondencia motor/encoder confirmada."));
+    delay(SETTLE_MS);
+  }
+}
+
+int pulseAt(int motor, int direction, int offset) {
+  return motors[motor].stopUs + (direction == 0 ? -offset : offset);
+}
+
+void discoverDirections(int direction) {
+  stopMotors();
+  int sampleCount[2];
+  int firstOffset[2];
+  int boundary = direction == 0 ? PULSE_MIN_US : PULSE_MAX_US;
+  int steps = 0;
+  for (int m = 0; m < 2; m++) {
+    int limit = abs(boundary - motors[m].stopUs);
+    sampleCount[m] = (limit - 1) / SCAN_STEP_US + 1;
+    firstOffset[m] = limit - (sampleCount[m] - 1) * SCAN_STEP_US;
+    steps = max(steps, sampleCount[m]);
+    motors[m].direction[direction].maximumPulses = 0;
+    motors[m].direction[direction].maximumUs = boundary;
+  }
+
+  // Uma janela para ambos. Cada array é ordenado pelo desvio da sua parada.
+  // Se um motor terminar antes, fica parado enquanto o outro conclui.
+  for (int step = 0; step < steps; step++) {
+    int pulses[2];
+    for (int m = 0; m < 2; m++) {
+      int i = sampleCount[m] - 1 - step;
+      pulses[m] = i >= 0
+        ? pulseAt(m, direction, firstOffset[m] + i * SCAN_STEP_US)
+        : motors[m].stopUs;
+      servos[m].writeMicroseconds(pulses[m]);
+    }
+    unsigned long counts[2];
+    measure(counts[0], counts[1]);
+    for (int m = 0; m < 2; m++) {
+      int i = sampleCount[m] - 1 - step;
+      if (i < 0) {
+        if (counts[m]) halt(F("motor concluido recebeu pulsos no comando de parada."));
+        continue;
+      }
+      printMeasurement(m, pulses[m], counts[0], counts[1]);
+      samples[m][i] = counts[m];
+      DirectionParameters &p = motors[m].direction[direction];
+      if (counts[m] > p.maximumPulses) {
+        p.maximumPulses = counts[m];
+        p.maximumUs = pulses[m];
+      }
+    }
+  }
   stopMotors();
 
-  leftTurns =
-    leftCount / LEFT_ENCODER_PPR;
-
-  rightTurns =
-    rightCount / RIGHT_ENCODER_PPR;
-
-
-  Serial.print("Pulsos L: ");
-  Serial.print(leftCount);
-
-  Serial.print(" | Pulsos R: ");
-  Serial.print(rightCount);
-
-  Serial.print(" | Voltas L: ");
-  Serial.print(leftTurns, 3);
-
-  Serial.print(" | Voltas R: ");
-  Serial.println(rightTurns, 3);
-
-
-  // Detecta encoder sem leitura
-
-  if (
-    leftCount == 0 || rightCount == 0) {
-    Serial.println(
-      "ERRO: um dos encoders nao registrou pulsos.");
-
-    return false;
+  for (int m = 0; m < 2; m++) {
+    DirectionParameters &p = motors[m].direction[direction];
+    if (!p.maximumPulses) halt(F("nenhum movimento neste sentido."));
+    // O mínimo delimita a busca: exige duas amostras vizinhas com pulsos.
+    p.minimumUs = p.maximumUs;
+    bool minimumFound = false;
+    int maximumOffset = abs(p.maximumUs - motors[m].stopUs);
+    for (int i = 0; i + 1 < sampleCount[m]; i++) {
+      int offset = firstOffset[m] + i * SCAN_STEP_US;
+      if (offset > maximumOffset) break;
+      if (samples[m][i] > 0 && samples[m][i + 1] > 0) {
+        p.minimumUs = pulseAt(m, direction, offset);
+        minimumFound = true;
+        break;
+      }
+    }
+    if (!minimumFound) {
+      Serial.println(F("AVISO: sem amostras vizinhas com movimento; limite inferior igual ao maximo medido."));
+    }
+    Serial.print(F("Motor=")); Serial.print(m == 0 ? F("L") : F("R"));
+    Serial.print(F(" limite inferior da calibracao (us): "));
+    Serial.println(p.minimumUs);
   }
-
-  return true;
 }
 
-
-// ======================================================
-// CALCULA ERRO ENTRE OS MOTORES
-// ======================================================
-
-float calculateError(float leftTurns, float rightTurns) {
-  float maximum = max(leftTurns, rightTurns);
-
-  if (maximum <= 0.0) {
-    return 1.0;
+void discoverParameters() {
+  Serial.println(F("ETAPA 2: PARAMETROS DOS MOTORES / MEDICAO SIMULTANEA"));
+  for (int m = 0; m < 2; m++) attachMotor(m, PULSE_MIN_US);
+  discoverStops();
+  unsigned long left, right;
+  measure(left, right);
+  if (left || right) halt(F("ha rotacao com ambos os comandos de parada."));
+  for (int d = 0; d < 2; d++) {
+    Serial.print(F("Ambos os motores: sentido_pulso="));
+    Serial.println(d == 0 ? F("negativo") : F("positivo"));
+    discoverDirections(d);
   }
-
-  return abs(leftTurns - rightTurns) / maximum;
 }
 
-
-// ======================================================
-// AJUSTA APENAS UM DOS MOTORES
-// ======================================================
-
-bool calibrateSingleMotor(
-  int speed,
-  bool adjustLeft,
-  float &leftGain,
-  float &rightGain,
-  float &lastError) {
-  if (adjustLeft) {
-    rightGain = 1.0;
-  } else {
-    leftGain = 1.0;
-  }
-
-  for (
-    int iteration = 1;
-    iteration <= MAX_ITERATIONS_PER_MOTOR;
-    iteration++) {
-    Serial.println();
-    Serial.print("Tentativa ");
-    Serial.print(iteration);
-    Serial.print("/");
-    Serial.println(MAX_ITERATIONS_PER_MOTOR);
-
-    Serial.print("Motor sendo ajustado: ");
-    Serial.println(adjustLeft ? "ESQUERDO" : "DIREITO");
-
-    Serial.print("LEFT_GAIN  = ");
-    Serial.println(leftGain, 4);
-
-    Serial.print("RIGHT_GAIN = ");
-    Serial.println(rightGain, 4);
-
-    float leftTurns;
-    float rightTurns;
-
-    bool success =
-      measureMotors(
-        speed,
-        leftGain,
-        rightGain,
-        leftTurns,
-        rightTurns);
-
-    if (!success) {
-      stopMotors();
-      lastError = 1.0;
-      return false;
-    }
-
-    lastError =
-      calculateError(
-        leftTurns,
-        rightTurns);
-
-    Serial.print("Erro: ");
-    Serial.print(lastError * 100.0, 2);
-    Serial.println("%");
-
-    if (lastError < TOLERANCE) {
-      Serial.println();
-      Serial.println("*** CALIBRACAO CONCLUIDA (< 5%) ***");
-      return true;
-    }
-
-    if (adjustLeft) {
-      float ratio =
-        rightTurns / leftTurns;
-
-      float correction =
-        pow(
-          ratio,
-          ADJUST_STRENGTH);
-
-      leftGain *= correction;
-
-      leftGain = constrain(
-        leftGain,
-        MIN_GAIN,
-        MAX_GAIN);
-
-      rightGain = 1.0;
-    } else {
-      float ratio =
-        leftTurns / rightTurns;
-
-      float correction =
-        pow(
-          ratio,
-          ADJUST_STRENGTH);
-
-      rightGain *= correction;
-
-      rightGain = constrain(
-        rightGain,
-        MIN_GAIN,
-        MAX_GAIN);
-
-      leftGain = 1.0;
-    }
-
-    delay(PAUSE_TIME_MS);
-  }
-
-  return false;
+// Comparação de pulsos pressupõe encoders com a mesma resolução.
+float relativeError(unsigned long left, unsigned long right) {
+  unsigned long largest = max(left, right);
+  return largest ? (float)(left > right ? left - right : right - left) / largest : 1.0;
 }
 
-
-// ======================================================
-// CALIBRA UMA DIREÇÃO
-// ======================================================
-
-void calibrateDirection(
-  int speed,
-  float &leftGain,
-  float &rightGain) {
-  leftGain = 1.0;
-  rightGain = 1.0;
-
-  Serial.println();
-  Serial.println("Medicao inicial para escolher o motor a ajustar...");
-
-  float leftTurns;
-  float rightTurns;
-
-  bool success =
-    measureMotors(
-      speed,
-      leftGain,
-      rightGain,
-      leftTurns,
-      rightTurns);
-
-  if (!success) {
-    stopMotors();
-    return;
-  }
-
-  float initialError =
-    calculateError(
-      leftTurns,
-      rightTurns);
-
-  Serial.print("Erro inicial: ");
-  Serial.print(initialError * 100.0, 2);
-  Serial.println("%");
-
-  if (initialError < TOLERANCE) {
-    Serial.println("*** JA ESTA CALIBRADO (< 5%) ***");
-    return;
-  }
-
-  // Ajusta primeiro o motor mais rápido e mantém o outro em ganho 1.0.
-  bool adjustLeft =
-    leftTurns > rightTurns;
-
-  Serial.print("Primeiro motor a ajustar: ");
-  Serial.println(adjustLeft ? "ESQUERDO" : "DIREITO");
-
-  float lastError = initialError;
-
-  bool calibrated =
-    calibrateSingleMotor(
-      speed,
-      adjustLeft,
-      leftGain,
-      rightGain,
-      lastError);
-
-  if (calibrated) {
-    return;
-  }
-
-  Serial.println();
-  Serial.print("Erro apos 10 tentativas: ");
-  Serial.print(lastError * 100.0, 2);
-  Serial.println("%");
-
-  if (lastError > SWITCH_MOTOR_ERROR) {
-    Serial.println();
-    Serial.println("Erro ainda acima de 50%.");
-    Serial.println(
-      "Trocando o motor de referencia e ajustando o outro.");
-
-    leftGain = 1.0;
-    rightGain = 1.0;
-
-    adjustLeft = !adjustLeft;
-
-    calibrated =
-      calibrateSingleMotor(
-        speed,
-        adjustLeft,
-        leftGain,
-        rightGain,
-        lastError);
-
-    if (calibrated) {
-      return;
-    }
-  }
-
-  Serial.println();
-  Serial.println("*** CALIBRACAO NAO CONVERGIU ***");
-  Serial.print("Erro final: ");
-  Serial.print(lastError * 100.0, 2);
-  Serial.println("%");
+void measurePair(const int pulses[2], unsigned long &left, unsigned long &right) {
+  servos[0].writeMicroseconds(pulses[0]);
+  servos[1].writeMicroseconds(pulses[1]);
+  measure(left, right);
+  stopMotors();
 }
 
+void calibrateDirection(int direction) {
+  // Montagem espelhada: pulsos opostos produzem o mesmo sentido lógico.
+  int dirs[2] = {direction, 1 - direction};
+  CalibrationResult &result = results[direction];
+  int pulses[2];
+  for (int m = 0; m < 2; m++) {
+    pulses[m] = motors[m].direction[dirs[m]].maximumUs;
+    result.pulseUs[m] = pulses[m];
+  }
+  unsigned long left, right;
+  measurePair(pulses, left, right);
+  if (!left || !right) halt(F("sem pulsos na medicao inicial da calibracao."));
+  result.error = relativeError(left, right);
+  result.valid = result.error < TOLERANCE;
+  if (result.valid) return;
 
-// ======================================================
-// EXIBE RESULTADO
-// ======================================================
+  int adjusted = left > right ? 0 : 1;
+  DirectionParameters &p = motors[adjusted].direction[dirs[adjusted]];
+  int low = abs(p.minimumUs - motors[adjusted].stopUs);
+  int high = abs(p.maximumUs - motors[adjusted].stopUs);
+  while (low <= high) {
+    int mid = low + (high - low) / 2;
+    pulses[adjusted] = pulseAt(adjusted, dirs[adjusted], mid);
+    measurePair(pulses, left, right);
+    unsigned long target = adjusted == 0 ? right : left;
+    unsigned long actual = adjusted == 0 ? left : right;
+    if (!target) halt(F("referencia sem pulsos durante calibracao."));
+    float error = relativeError(left, right);
+    Serial.print(F("CAL sentido=")); Serial.print(direction);
+    Serial.print(F(" pulso_L=")); Serial.print(pulses[0]);
+    Serial.print(F(" pulso_R=")); Serial.print(pulses[1]);
+    Serial.print(F(" pulsos_L=")); Serial.print(left);
+    Serial.print(F(" pulsos_R=")); Serial.print(right);
+    Serial.print(F(" erro_pct=")); Serial.println(error * 100.0, 2);
+    if (error < result.error) {
+      result.error = error;
+      result.pulseUs[0] = pulses[0];
+      result.pulseUs[1] = pulses[1];
+    }
+    if (error < TOLERANCE) { result.valid = true; return; }
+    if (actual > target) high = mid - 1;
+    else low = mid + 1;
+  }
+  Serial.println(F("AVISO: tolerancia nao atingida; melhor medicao mantida."));
+}
+
+// Trecho copiável, como no log original do repositório.
+void printCodeResults() {
+  Serial.println(F("\n// ===== CODIGO DOS PARAMETROS E DA CALIBRACAO ====="));
+  Serial.println(F("// POSITIVE: L aumenta pulso, R diminui; NEGATIVE: inverso."));
+  Serial.println(F("// Ganhos multiplicam o desvio entre MAX e STOP de cada sentido."));
+  Serial.println(F("// MIN, MAX e CALIBRATED sao pulsos absolutos em microssegundos."));
+  for (int m = 0; m < 2; m++) {
+    Serial.print(F("const int "));
+    Serial.print(m == 0 ? F("LEFT") : F("RIGHT"));
+    Serial.print(F("_STOP = ")); Serial.print(motors[m].stopUs);
+    Serial.println(';');
+  }
+  for (int d = 1; d >= 0; d--) {
+    Serial.print(F("const bool CALIBRATION_VALID_"));
+    Serial.print(d == 1 ? F("POSITIVE") : F("NEGATIVE"));
+    Serial.print(F(" = "));
+    Serial.print(results[d].valid ? F("true") : F("false"));
+    Serial.println(';');
+    if (!results[d].valid) Serial.println(F("// ATENCAO: melhor ajuste abaixo nao atingiu a tolerancia."));
+    for (int m = 0; m < 2; m++) {
+      DirectionParameters &p = motors[m].direction[m == 0 ? d : 1 - d];
+      for (int field = 0; field < 4; field++) {
+        Serial.print(field == 3 ? F("const float ") : F("const int "));
+        Serial.print(m == 0 ? F("LEFT_") : F("RIGHT_"));
+        switch (field) {
+          case 0: Serial.print(F("MIN_")); break;
+          case 1: Serial.print(F("MAX_")); break;
+          case 2: Serial.print(F("CALIBRATED_")); break;
+          case 3: Serial.print(F("GAIN_")); break;
+        }
+        Serial.print(d == 1 ? F("POSITIVE") : F("NEGATIVE"));
+        Serial.print(F(" = "));
+        if (field == 0) Serial.print(p.minimumUs);
+        else if (field == 1) Serial.print(p.maximumUs);
+        else if (field == 2) Serial.print(results[d].pulseUs[m]);
+        else Serial.print((float)abs(results[d].pulseUs[m] - motors[m].stopUs) /
+                              abs(p.maximumUs - motors[m].stopUs), 4);
+        Serial.println(';');
+      }
+    }
+  }
+  Serial.println(F("// ===== FIM DO CODIGO =====\n"));
+}
 
 void printResults() {
-  Serial.println();
-  Serial.println();
-  Serial.println("==============================");
-  Serial.println(" RESULTADO FINAL");
-  Serial.println("==============================");
-  Serial.println();
-
-  Serial.print(
-    "const float LEFT_GAIN_POSITIVE = ");
-  Serial.print(leftGainPositive, 4);
-  Serial.println(";");
-
-  Serial.print(
-    "const float RIGHT_GAIN_POSITIVE = ");
-  Serial.print(rightGainPositive, 4);
-  Serial.println(";");
-
-  Serial.println();
-
-  Serial.print(
-    "const float LEFT_GAIN_NEGATIVE = ");
-  Serial.print(leftGainNegative, 4);
-  Serial.println(";");
-
-  Serial.print(
-    "const float RIGHT_GAIN_NEGATIVE = ");
-  Serial.print(rightGainNegative, 4);
-  Serial.println(";");
-
-  Serial.println();
+  Serial.println(F("ETAPA 4: RESULTADOS"));
+  Serial.print(F("Unidades: comandos em us; velocidade em pulsos por janela de "));
+  Serial.print(MEASURE_MS); Serial.println(F(" ms."));
+  Serial.println(F("MOTOR,SENTIDO_PULSO,PARADA_US,MIN_US,MAX_US,PULSOS_MAX"));
+  for (int m = 0; m < 2; m++) {
+    for (int d = 0; d < 2; d++) {
+      DirectionParameters &p = motors[m].direction[d];
+      Serial.print(m == 0 ? F("L,") : F("R,"));
+      Serial.print(d == 0 ? F("-,") : F("+,"));
+      Serial.print(motors[m].stopUs); Serial.print(',');
+      Serial.print(p.minimumUs); Serial.print(',');
+      Serial.print(p.maximumUs); Serial.print(',');
+      Serial.println(p.maximumPulses);
+    }
+  }
+  Serial.println(F("CAL_SENTIDO,VALIDO,PULSO_L_US,PULSO_R_US,GANHO_L,GANHO_R,ERRO_PCT"));
+  for (int d = 0; d < 2; d++) {
+    CalibrationResult &r = results[d];
+    Serial.print(d); Serial.print(','); Serial.print(r.valid); Serial.print(',');
+    for (int m = 0; m < 2; m++) { Serial.print(r.pulseUs[m]); Serial.print(','); }
+    for (int m = 0; m < 2; m++) {
+      int motorDirection = m == 0 ? d : 1 - d;
+      float gain = (float)abs(r.pulseUs[m] - motors[m].stopUs) /
+        abs(motors[m].direction[motorDirection].maximumUs - motors[m].stopUs);
+      Serial.print(gain, 4); Serial.print(',');
+    }
+    Serial.println(r.error * 100.0, 2);
+  }
+  printCodeResults();
+  Serial.println(F("Plot de validacao a seguir. Envie p para repetir o plot."));
 }
 
+// Plot de validação: duas séries com pulsos medidos após a calibração.
+// Executa ao final do setup; envie 'p' para repetir. Termina com ambos parados.
+void plotResults() {
+  for (int d = 0; d < 2; d++) {
+    if (!results[d].valid) continue;
+    servos[0].writeMicroseconds(results[d].pulseUs[0]);
+    servos[1].writeMicroseconds(results[d].pulseUs[1]);
+    delay(SETTLE_MS);
+    for (int i = 0; i < 10; i++) {
+      resetEncoders();
+      delay(MEASURE_MS);
+      unsigned long left, right;
+      readEncoders(left, right);
+      Serial.print(F("L:")); Serial.print(left);
+      Serial.print(F("\tR:")); Serial.println(right);
+    }
+    stopMotors();
+    delay(SETTLE_MS);
+  }
+}
 
-// ======================================================
-// SETUP
-// ======================================================
+// Teste independente: mantém os comandos fixos até reiniciar a placa.
+// Inicializa os encoders sem executar as etapas de descoberta/calibração.
+void debugMotorPulses(int leftPulseUs, int rightPulseUs) {
+  pinMode(LEFT_ENCODER_PIN, INPUT_PULLUP);
+  pinMode(RIGHT_ENCODER_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(LEFT_ENCODER_PIN), leftEncoderISR, RISING);
+  attachInterrupt(digitalPinToInterrupt(RIGHT_ENCODER_PIN), rightEncoderISR, RISING);
+  attachMotor(0, leftPulseUs);
+  attachMotor(1, rightPulseUs);
+
+  Serial.println(F("DEBUG: comandos fixos; reinicie a placa para encerrar."));
+  Serial.print(F("pulso_L_us=")); Serial.print(leftPulseUs);
+  Serial.print(F(" pulso_R_us=")); Serial.print(rightPulseUs);
+  Serial.print(F(" janela_ms=")); Serial.println(MEASURE_MS);
+  delay(SETTLE_MS);
+  while (true) {
+    resetEncoders();
+    delay(MEASURE_MS);
+    unsigned long left, right;
+    readEncoders(left, right);
+    Serial.print(F("pulsos_L=")); Serial.print(left);
+    Serial.print(F(" pulsos_R=")); Serial.println(right);
+  }
+}
 
 void setup() {
   Serial.begin(115200);
-
-  leftServo.attach(LEFT_SERVO_PIN);
-  rightServo.attach(RIGHT_SERVO_PIN);
-  
-
-  // stopMotors();
-  // while(1);
-
-  pinMode(
-    LEFT_ENCODER_PIN,
-    INPUT_PULLUP);
-
-  pinMode(
-    RIGHT_ENCODER_PIN,
-    INPUT_PULLUP);
-
-
-  attachInterrupt(
-    digitalPinToInterrupt(LEFT_ENCODER_PIN),
-    leftEncoderISR,
-    RISING);
-
-  attachInterrupt(
-    digitalPinToInterrupt(RIGHT_ENCODER_PIN),
-    rightEncoderISR,
-    RISING);
-
-
-  stopMotors();
-
   delay(2000);
+  // Descomente para testar a configuração da falha; o helper não retorna.
+  // Comente novamente para executar o fluxo de calibração abaixo.
+  // debugMotorPulses(1000, 1550);
 
-
-  // ====================================================
-  // POSITIVO
-  // ====================================================
-
-  Serial.println();
-  Serial.println("==============================");
-  Serial.println(" CALIBRANDO VELOCIDADE POSITIVA");
-  Serial.println("==============================");
-
-  calibrateDirection(
-    CALIBRATION_SPEED,
-    leftGainPositive,
-    rightGainPositive);
-
-
-  delay(2000);
-
-
-  // ====================================================
-  // NEGATIVO
-  // ====================================================
-
-  Serial.println();
-  Serial.println("==============================");
-  Serial.println(" CALIBRANDO VELOCIDADE NEGATIVA");
-  Serial.println("==============================");
-
-  calibrateDirection(
-    -CALIBRATION_SPEED,
-    leftGainNegative,
-    rightGainNegative);
-
-
+  setupHardware();
+  discoverParameters();
+  Serial.println(F("ETAPA 3: CALIBRACAO POR BUSCA BINARIA"));
+  calibrateDirection(0);
+  calibrateDirection(1);
   stopMotors();
-
   printResults();
+  plotResults();
 }
 
-
-// ======================================================
-// LOOP
-// ======================================================
-
 void loop() {
-  // Calibração executada apenas uma vez no setup().
+  if (Serial.available() && Serial.read() == 'p') plotResults();
 }
