@@ -70,8 +70,8 @@ float rightGainNegative = 1.0;
 // CONFIGURAÇÃO DA CALIBRAÇÃO
 // ======================================================
 
-// Velocidade lógica utilizada no teste
-const int CALIBRATION_SPEED = 150*3;
+// Velocidade lógica utilizada no teste (max 300)
+const int CALIBRATION_SPEED = 300;
 
 // Tempo para o motor atingir velocidade estável
 const unsigned long SETTLE_TIME_MS = 500;
