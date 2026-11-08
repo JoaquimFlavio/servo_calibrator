@@ -1,6 +1,6 @@
-# Calibrador de servomotores
+# Servo Calibrator
 
-Sketch para Arduino Uno que calibra um par de **servos de rotação contínua** com encoders. Identifica os pontos de parada e calcula ganhos por motor e sentido para equilibrar as velocidades de uma tração diferencial.
+O Sketch é um calibrador de servomotores para Arduino que calibra um par de **servos de rotação contínua** com encoders. Identifica os pontos de parada e calcula ganhos por motor e sentido para equilibrar as velocidades de uma tração diferencial.
 
 ![Montagem conceitual com servos espelhados e encoders](docs/images/robo-seguidor.svg)
 
@@ -15,12 +15,12 @@ Sketch para Arduino Uno que calibra um par de **servos de rotação contínua** 
 
 A montagem de referência utiliza servos MG996 de rotação contínua e sensores ópticos LM393. Esquerda e direita são definidas olhando para a frente do robô.
 
-| Sinal | Pino no Uno | Constante no sketch |
-| --- | --- | --- |
-| Servo esquerdo | D6 | `LEFT_SERVO_PIN` |
-| Servo direito | D5 | `RIGHT_SERVO_PIN` |
-| Encoder esquerdo | D2 | `LEFT_ENCODER_PIN` |
-| Encoder direito | D3 | `RIGHT_ENCODER_PIN` |
+| Sinal            | Pino no Uno | Constante no sketch |
+| ---------------- | ----------- | ------------------- |
+| Servo esquerdo   | D6          | `LEFT_SERVO_PIN`    |
+| Servo direito    | D5          | `RIGHT_SERVO_PIN`   |
+| Encoder esquerdo | D2          | `LEFT_ENCODER_PIN`  |
+| Encoder direito  | D3          | `RIGHT_ENCODER_PIN` |
 
 Os encoders usam `INPUT_PULLUP` e interrupção na borda `RISING`. Ao trocar de placa, use pinos com suporte a interrupções externas e sinais compatíveis com seus níveis lógicos.
 
@@ -55,10 +55,10 @@ const float RIGHT_GAIN_NEGATIVE = 0.8908;
 
 Os sentidos lógicos consideram os servos espelhados:
 
-| Sentido | Pulso esquerdo | Pulso direito |
-| --- | --- | --- |
-| `POSITIVE` | Acima da parada | Abaixo da parada |
-| `NEGATIVE` | Abaixo da parada | Acima da parada |
+| Sentido    | Pulso esquerdo   | Pulso direito    |
+| ---------- | ---------------- | ---------------- |
+| `POSITIVE` | Acima da parada  | Abaixo da parada |
+| `NEGATIVE` | Abaixo da parada | Acima da parada  |
 
 Cada ganho corrige o desvio em relação à parada, usando o máximo medido daquele motor e sentido como referência:
 
@@ -74,24 +74,24 @@ Use os máximos da tabela `Parametros dos motores`, respeitando a correspondênc
 
 Constantes no início do sketch:
 
-| Constante | Padrão | Função |
-| --- | --- | --- |
-| `PULSE_MIN_US` / `PULSE_MAX_US` | `1000` / `2000` µs | Limites de exploração dos servos. |
-| `SCAN_STEP_US` | `25` µs | Passo da varredura; reduzi-lo aumenta resolução, duração e consumo de RAM. |
-| `SETTLE_MS` | `500` ms | Espera após alterar o comando. |
-| `MEASURE_MS` | `1000` ms | Janela de contagem dos encoders. |
-| `TOLERANCE` | `0.05` (5%) | Aceita quando `abs(L - R) / max(L, R) < TOLERANCE`. |
+| Constante                       | Padrão             | Função                                                                     |
+| ------------------------------- | ------------------ | -------------------------------------------------------------------------- |
+| `PULSE_MIN_US` / `PULSE_MAX_US` | `1000` / `2000` µs | Limites de exploração dos servos.                                          |
+| `SCAN_STEP_US`                  | `25` µs            | Passo da varredura; reduzi-lo aumenta resolução, duração e consumo de RAM. |
+| `SETTLE_MS`                     | `500` ms           | Espera após alterar o comando.                                             |
+| `MEASURE_MS`                    | `1000` ms          | Janela de contagem dos encoders.                                           |
+| `TOLERANCE`                     | `0.05` (5%)        | Aceita quando `abs(L - R) / max(L, R) < TOLERANCE`.                        |
 
 A rotina verifica a associação motor/encoder, encontra a faixa de parada e os limites de movimento, depois reduz o comando do motor mais rápido por busca binária em cada sentido. O máximo é o comando com maior contagem na varredura, não um limite mecânico.
 
 ## Diagnóstico
 
-| Ocorrência | Verifique |
-| --- | --- |
-| Falha de correspondência | Pinagem e associação entre motor e encoder. |
-| Parada não identificada | Tipo de servo, alimentação, faixa de pulsos e passo da varredura. |
-| Ausência ou oscilação de pulsos | Alimentação, GND comum, alinhamento do encoder e carga mecânica. |
-| `NAO CONVERGIU` | Estabilidade do conjunto e janela de medição; aumente `MEASURE_MS` se houver poucos pulsos. |
+| Ocorrência                      | Verifique                                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------------- |
+| Falha de correspondência        | Pinagem e associação entre motor e encoder.                                                 |
+| Parada não identificada         | Tipo de servo, alimentação, faixa de pulsos e passo da varredura.                           |
+| Ausência ou oscilação de pulsos | Alimentação, GND comum, alinhamento do encoder e carga mecânica.                            |
+| `NAO CONVERGIU`                 | Estabilidade do conjunto e janela de medição; aumente `MEASURE_MS` se houver poucos pulsos. |
 
 Para medir com comandos fixos, descomente `debugMotorPulses(1000, 1550);` no `setup()` e carregue novamente. Esse modo mantém os comandos até o reset e não executa a calibração. Comente a chamada e recarregue para retornar ao fluxo normal.
 
