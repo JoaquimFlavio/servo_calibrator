@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="640" viewBox="0 0 1000 640" role="img" aria-labelledby="title desc">
+  <title id="title">Carrinho seguidor de linha com dois servos e encoders</title>
+  <desc id="desc">Vista superior esquemática: sensores de linha na frente, placa Arduino no centro, servos espelhados e encoders junto às rodas esquerda e direita. Uma fonte alimenta os motores.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#5b8992" stroke-width="1.5"/></marker>
+    <style>
+      text {font-family:Arial,sans-serif;fill:#365765;font-size:17px}
+      .line {fill:none;stroke:#88a8b4;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+      .wire {fill:none;stroke:#89bdb5;stroke-width:2;stroke-dasharray:6 6}
+      .small {font-size:14px;fill:#607e88}
+    </style>
+  </defs>
+  <rect width="1000" height="640" rx="24" fill="#fbfdfe"/>
+  <text x="40" y="45" font-size="24">Duas rodas, dois motores, uma mesma referência</text>
+  <text x="40" y="73" class="small">Vista superior • desenho conceitual, sem escala</text>
+  <path d="M500 570 V125" stroke="#dae4e9" stroke-width="18" fill="none"/>
+  <path d="M605 200 V120" class="line" marker-end="url(#arrow)"/>
+  <text x="625" y="153">Frente</text>
+  <rect x="323" y="195" width="354" height="320" rx="55" fill="#f1f7fa" stroke="#a6bdc8" stroke-width="2"/>
+  <rect x="407" y="173" width="186" height="35" rx="9" fill="#edf6ef" stroke="#9cbeb0" stroke-width="2"/>
+  <circle cx="438" cy="190" r="7" fill="#acc8b9"/><circle cx="500" cy="190" r="7" fill="#acc8b9"/><circle cx="562" cy="190" r="7" fill="#acc8b9"/>
+  <path d="M407 185 H232" class="line"/>
+  <text x="60" y="178">Sensores de linha</text><text x="60" y="200" class="small">Usados pelo PID do robô</text>
+  <rect x="425" y="252" width="150" height="100" rx="12" fill="#e2f1f3" stroke="#8eafb9" stroke-width="2"/>
+  <text x="449" y="294">Arduino Uno</text><text x="450" y="320" class="small">calibrador</text>
+  <rect x="421" y="424" width="158" height="60" rx="10" fill="#fbf3df" stroke="#cbbd96" stroke-width="2"/>
+  <text x="447" y="450">Alimentação</text><text x="440" y="471" class="small">GND em comum</text>
+  <rect x="235" y="305" width="54" height="135" rx="15" fill="#e7eef3" stroke="#92a8b7" stroke-width="2"/>
+  <rect x="711" y="305" width="54" height="135" rx="15" fill="#e7eef3" stroke="#92a8b7" stroke-width="2"/>
+  <path d="M289 372 H363 M637 372 H711" class="line"/>
+  <rect x="335" y="337" width="75" height="72" rx="10" fill="#e9eefb" stroke="#a6b4d1" stroke-width="2"/>
+  <rect x="590" y="337" width="75" height="72" rx="10" fill="#e9eefb" stroke="#a6b4d1" stroke-width="2"/>
+  <text x="346" y="369" class="small">Servo L</text><text x="601" y="369" class="small">Servo R</text>
+  <circle cx="313" cy="372" r="18" fill="#fff5e6" stroke="#c7b28e" stroke-width="2"/>
+  <circle cx="687" cy="372" r="18" fill="#fff5e6" stroke="#c7b28e" stroke-width="2"/>
+  <path d="M313 355 V389 M296 372 H330 M687 355 V389 M670 372 H704" stroke="#c7b28e" fill="none"/>
+  <path d="M313 350 V292 H425 M687 350 V292 H575" class="wire"/>
+  <path d="M410 380 H445 V352 M590 380 H555 V352" class="wire"/>
+  <path d="M313 395 V481 H205 M687 395 V481 H795" class="line"/>
+  <text x="63" y="478">Encoder esquerdo</text><text x="63" y="500" class="small">Conta o eixo da roda L</text>
+  <text x="798" y="478">Encoder direito</text><text x="798" y="500" class="small">Conta o eixo da roda R</text>
+  <text x="175" y="290" class="small">Esquerda (L)</text><text x="727" y="290" class="small">Direita (R)</text>
+  <text x="315" y="558" class="small">Servos montados em espelho • eixos voltados para fora</text>
+  <path d="M55 595 H95" class="wire"/><text x="108" y="600" class="small">Sinais de controle e leitura (esquemáticos)</text>
+  <text x="625" y="600" class="small">Encoders acrescentados para a calibração</text>
+</svg>
